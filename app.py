@@ -319,6 +319,14 @@ def fit_notebook_model(full_df: pd.DataFrame):
         subset=["price", "lot_acres", "Distance"]
     ).copy()
 
+    # Force Close to be the reference category so that:
+    # C(Distance)[T.Further] = Further relative to Close.
+    model_df["Distance"] = pd.Categorical(
+        model_df["Distance"],
+        categories=["Close", "Further"],
+        ordered=False,
+    )
+
     model = smf.ols(
         MODEL_FORMULA,
         data=model_df,
