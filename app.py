@@ -389,21 +389,8 @@ def train_model(df: pd.DataFrame, model_name: str):
     formulas = {
         "Baseline": "log_price_model ~ log_acres_model + is_close",
         "Access": (
-            "log_price_model ~ log_acres_model + is_close + "
-            "electric_tf + public_water_tf + well_tf + sewer_tf + "
-            "road_frontage_tf + easement_tf + survey_tf"
-        ),
-        "Site + Access": (
-            "log_price_model ~ log_acres_model + is_close + "
-            "perc_available_tf + perc_preliminary_tf + perc_negative_tf + "
-            "electric_tf + public_water_tf + well_tf + sewer_tf + "
-            "road_frontage_tf + easement_tf + survey_tf"
-        ),
-        "Land Character": (
-            "log_price_model ~ log_acres_model + is_close + "
-            "wooded_tf + pasture_tf + creek_tf + pond_tf + river_tf + "
-            "spring_tf + fenced_tf + hunting_tf + horse_cattle_tf + view_tf"
-        ),
+            "log_price_model ~ log_acres_model + C(Distance)"
+        )
     }
     model = smf.ols(formulas[model_name], data=active).fit(cov_type="HC3")
     smearing = float(np.mean(np.exp(model.resid)))
