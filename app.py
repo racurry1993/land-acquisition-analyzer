@@ -570,7 +570,7 @@ st.caption(
 distance_term = next(
     (
         term
-        for term in model.params.index
+        for term in final_model.params.index
         if term.startswith("C(Distance)")
     ),
     None
@@ -579,7 +579,7 @@ distance_term = next(
 acreage_term = next(
     (
         term
-        for term in model.params.index
+        for term in final_model.params.index
         if "log(lot_acres)" in term
     ),
     None
@@ -603,11 +603,11 @@ acreage_term = next(
 
 if distance_term is not None:
 
-    distance_coef = model.params[
+    distance_coef = final_model.params[
         distance_term
     ]
 
-    distance_pvalue = model.pvalues[
+    distance_pvalue = final_model.pvalues[
         distance_term
     ]
 
@@ -634,11 +634,11 @@ else:
 
 if acreage_term is not None:
 
-    acreage_elasticity = model.params[
+    acreage_elasticity = final_model.params[
         acreage_term
     ]
 
-    acreage_pvalue = model.pvalues[
+    acreage_pvalue = final_model.pvalues[
         acreage_term
     ]
 
@@ -657,19 +657,19 @@ m1, m2, m3, m4 = st.columns(4)
 
 m1.metric(
     "Model Observations",
-    f"{int(model.nobs):,}"
+    f"{int(final_model.nobs):,}"
 )
 
 
 m2.metric(
     "R²",
-    f"{model.rsquared:.3f}"
+    f"{final_model.rsquared:.3f}"
 )
 
 
 m3.metric(
     "Adjusted R²",
-    f"{model.rsquared_adj:.3f}"
+    f"{final_model.rsquared_adj:.3f}"
 )
 
 
@@ -780,7 +780,7 @@ with st.expander(
 ):
 
     st.text(
-        model.summary().as_text()
+        final_model.summary().as_text()
     )
 
 
@@ -1097,6 +1097,64 @@ if budget_only:
     property_df = property_df[
         property_df["price"].le(budget)
     ].copy()
+
+# ============================================================
+# CITY VALUE-COUNT CHART
+# ============================================================
+# Shows the number of properties meeting the currently selected
+# property-table criteria, grouped by city and split by Distance.
+# ============================================================
+
+if not property_df.empty and "city" in property_df.columns:
+    city_counts = (
+        property_df.assign(
+            city=property_df["city"]
+            .fillna("Unknown")
+            .astype(str)
+            .str.strip()
+            .replace("", "Unknown")
+        )
+        .groupby(["city", "Distance"], as_index=False)
+        .size()
+        .rename(columns={"size": "Properties"})
+        .sort_values("Properties", ascending=False)
+    )
+
+    st.subheader("Properties Meeting Selected Criteria by City")
+    st.caption(
+        "Counts reflect the current property-table filters for status, acreage, "
+        "budget, and Close/Further selection."
+    )
+
+    city_fig = px.bar(
+        city_counts,
+        x="city",
+        y="Properties",
+        color="Distance",
+        barmode="group",
+        text="Properties",
+        title="Property Count by City",
+        labels={
+            "city": "City",
+            "Properties": "Number of Properties",
+            "Distance": "Location Group",
+        },
+    )
+
+    city_fig.update_traces(
+        textposition="outside"
+    )
+
+    city_fig.update_layout(
+        xaxis_tickangle=-45,
+        margin=dict(l=20, r=20, t=60, b=120),
+        legend_title_text="Location Group",
+    )
+
+    st.plotly_chart(
+        city_fig,
+        width="stretch"
+    )
 
 if property_df.empty:
     st.info("No properties match the current filters.")
