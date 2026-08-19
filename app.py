@@ -809,11 +809,7 @@ def train_model(
     """
 
 
-    active = df[
-        df["status_norm"].eq(
-            "FOR_SALE"
-        )
-    ].copy()
+    active = df.copy()
 
 
     active = active.dropna(
