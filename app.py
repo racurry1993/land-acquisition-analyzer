@@ -93,6 +93,56 @@ def normalize_location(value: object) -> str:
     return re.sub(r"\s+", " ", str(value).strip()).casefold()
 
 
+def build_text_features(df: pd.DataFrame) -> pd.DataFrame:
+    """Conservative text-derived site/perk flags for filtering only.
+
+    These flags are NOT used by the valuation model. They are intended to
+    help users inspect how described site characteristics relate to prices.
+    """
+    out = df.copy()
+    text = (
+        out.get("text", pd.Series("", index=out.index))
+        .fillna("")
+        .astype(str)
+        .str.lower()
+        .str.replace(r"\s+", " ", regex=True)
+        .str.strip()
+    )
+
+    # Conservative definition: language indicating an existing/approved/passed
+    # perk/perc/soil/septic site. This intentionally avoids treating every
+    # generic mention of septic/perk as a positive site.
+    positive = (
+        text.str.contains(
+            r"(?:approved|passed|existing|installed|functional).{0,100}(?:perc|perk|soil|septic)"
+            r"|(?:perc|perk|soil|septic).{0,100}(?:approved|passed|existing|installed|functional)",
+            regex=True,
+            na=False,
+        )
+        | text.str.contains(
+            r"(?:4\s*br|5\s*br|4-5\s*bedroom|3-4\s*br).{0,80}(?:soil|perk|perc|homesite)",
+            regex=True,
+            na=False,
+        )
+    )
+
+    negative = text.str.contains(
+        r"(?:failed|fail|no|not|does not|doesn't|won't|will not).{0,50}(?:perc|perk|soil|septic)"
+        r"|(?:perc|perk|soil|septic).{0,50}(?:failed|fail|not suitable|unsuitable)",
+        regex=True,
+        na=False,
+    )
+
+    out["has_perked"] = np.select(
+        [negative, positive],
+        ["No", "Yes"],
+        default="Unknown",
+    )
+
+    out["has_perked_flag"] = out["has_perked"].eq("Yes").astype(int)
+    return out
+
+
 # ============================================================
 # ACREAGE LEVELS
 # ============================================================
@@ -271,6 +321,8 @@ def scrape_locations(
         pd.to_numeric(full_df["price"], errors="coerce")
         / pd.to_numeric(full_df["lot_acres"], errors="coerce")
     )
+
+    full_df = build_text_features(full_df)
 
     return full_df.reset_index(drop=True)
 
@@ -693,7 +745,7 @@ curve_df = build_prediction_curve(
 wide = curve_df.pivot(
     index="acres",
     columns="Distance",
-    values=["estimate"],
+    values=["estimate", "ci_low", "ci_high"],
 )
 
 wide.columns = ["_".join(c) for c in wide.columns]
@@ -709,10 +761,6 @@ wide["close_multiple"] = (
     / wide["estimate_Further"]
 )
 
-wide["close_premium_pct"] = (
-    wide["close_multiple"] - 1
-)
-
 wide["additional_cash_close"] = (
     wide["estimate_Close"] - budget
 ).clip(lower=0)
@@ -721,44 +769,64 @@ wide["additional_cash_further"] = (
     wide["estimate_Further"] - budget
 ).clip(lower=0)
 
-# Actual CURRENT inventory by cumulative acreage threshold.
-active_mask = (
-    full_df["status"].astype(str).str.upper().eq("FOR_SALE")
-)
+# Actual CURRENT inventory by acreage category. The first category is
+# 0-min/max target (for a 15-acre target: 0-15), then prior+1 to next.
+active_mask = full_df["status"].astype(str).str.upper().eq("FOR_SALE")
 active_df = full_df[active_mask].copy()
 
 inventory_rows = []
+previous_upper = 0
 
 for acre in acreage_levels:
-    eligible = active_df[
-        active_df["lot_acres"].ge(acre)
-        & active_df["price"].le(budget)
-    ]
+    category = f"{int(previous_upper) + 1}-{int(acre)}" if previous_upper > 0 else f"0-{int(acre)}"
+
+    category_df = active_df[
+        active_df["lot_acres"].gt(previous_upper)
+        & active_df["lot_acres"].le(acre)
+    ].copy()
+
+    close_df_cat = category_df[category_df["Distance"] == "Close"]
+    further_df_cat = category_df[category_df["Distance"] == "Further"]
+
+    close_pct = (
+        close_df_cat["price"].le(budget).mean()
+        if len(close_df_cat) else np.nan
+    )
+    further_pct = (
+        further_df_cat["price"].le(budget).mean()
+        if len(further_df_cat) else np.nan
+    )
 
     inventory_rows.append({
         "acres": acre,
-        "close_listings_under_budget": int(
-            (eligible["Distance"] == "Close").sum()
-        ),
-        "further_listings_under_budget": int(
-            (eligible["Distance"] == "Further").sum()
-        ),
+        "acreage_category": category,
+        "close_under_budget_pct": close_pct,
+        "further_under_budget_pct": further_pct,
+        "close_category_n": len(close_df_cat),
+        "further_category_n": len(further_df_cat),
     })
+
+    previous_upper = acre
 
 inventory_df = pd.DataFrame(inventory_rows)
 wide = wide.merge(inventory_df, on="acres", how="left")
 
+ci_pct = int(ci_level * 100)
 display_df = wide.rename(columns={
     "acres": "Acres",
+    "acreage_category": "Acreage Category",
     "estimate_Close": "Close Estimated",
     "estimate_Further": "Further Estimated",
+    "ci_low_Close": f"Close {ci_pct}% CI Low",
+    "ci_high_Close": f"Close {ci_pct}% CI High",
+    "ci_low_Further": f"Further {ci_pct}% CI Low",
+    "ci_high_Further": f"Further {ci_pct}% CI High",
     "cost_of_proximity": "Cost of Proximity",
     "close_multiple": "Close / Further",
-    "close_premium_pct": "Close Premium",
     "additional_cash_close": "Extra Cash for Close",
     "additional_cash_further": "Extra Cash for Further",
-    "close_listings_under_budget": "Close Listings <= Budget",
-    "further_listings_under_budget": "Further Listings <= Budget",
+    "close_under_budget_pct": "Close <= Budget %",
+    "further_under_budget_pct": "Further <= Budget %",
 }).copy()
 
 st.subheader("Acquisition decision table")
@@ -771,16 +839,18 @@ st.dataframe(
         "Acres": st.column_config.NumberColumn(format="%.0f"),
         "Close Estimated": st.column_config.NumberColumn(format="$%,.0f"),
         "Further Estimated": st.column_config.NumberColumn(format="$%,.0f"),
+        f"Close {ci_pct}% CI Low": st.column_config.NumberColumn(format="$%,.0f"),
+        f"Close {ci_pct}% CI High": st.column_config.NumberColumn(format="$%,.0f"),
+        f"Further {ci_pct}% CI Low": st.column_config.NumberColumn(format="$%,.0f"),
+        f"Further {ci_pct}% CI High": st.column_config.NumberColumn(format="$%,.0f"),
         "Cost of Proximity": st.column_config.NumberColumn(format="$%,.0f"),
         "Close / Further": st.column_config.NumberColumn(format="%.2fx"),
-        "Close Premium": st.column_config.NumberColumn(format="%.1%"),
         "Extra Cash for Close": st.column_config.NumberColumn(format="$%,.0f"),
         "Extra Cash for Further": st.column_config.NumberColumn(format="$%,.0f"),
-        "Close Listings <= Budget": st.column_config.NumberColumn(format="%d"),
-        "Further Listings <= Budget": st.column_config.NumberColumn(format="%d"),
+        "Close <= Budget %": st.column_config.NumberColumn(format="%.1%"),
+        "Further <= Budget %": st.column_config.NumberColumn(format="%.1%"),
     },
 )
-
 
 # ============================================================
 # VISUALS
@@ -788,11 +858,12 @@ st.dataframe(
 
 st.subheader("Valuation visuals")
 
-tab1, tab2, tab3, tab4 = st.tabs([
+tab1, tab2, tab3, tab4, tab5 = st.tabs([
     "Price / Acre Boxplot",
     "Observed Log / Log",
     "Acquisition Curve",
     "City Value Counts",
+    "City Price Map",
 ])
 
 with tab1:
@@ -1042,7 +1113,7 @@ else:
 
 
 # ============================================================
-# WHAT-IF CALCULATOR + CITY COUNTS
+# WHAT-IF CALCULATOR + CITY COUNTS + CITY MAP
 # ============================================================
 
 st.subheader("What-if calculator")
@@ -1054,7 +1125,6 @@ for group_name, locations in [("Close", location_1), ("Further", location_2)]:
         if city_name:
             city_lookup[city_name] = group_name
 
-# Also add observed cities from the current HomeHarvest dataset.
 for _, row in full_df[["city", "Distance"]].dropna().drop_duplicates().iterrows():
     city_name = str(row["city"]).strip()
     if city_name and city_name not in city_lookup:
@@ -1083,10 +1153,11 @@ with w2:
         index=0,
     )
 
-if what_if_location in {"Close", "Further"}:
-    what_if_distance = what_if_location
-else:
-    what_if_distance = city_lookup[what_if_location]
+what_if_distance = (
+    what_if_location
+    if what_if_location in {"Close", "Further"}
+    else city_lookup[what_if_location]
+)
 
 what_if_prediction_df = pd.DataFrame({
     "lot_acres": [what_if_acres],
@@ -1096,8 +1167,13 @@ what_if_prediction_df = pd.DataFrame({
     ),
 })
 
-what_if_pred = final_model.get_prediction(what_if_prediction_df).summary_frame()
+what_if_pred = final_model.get_prediction(
+    what_if_prediction_df
+).summary_frame(alpha=1 - ci_level)
+
 what_if_price = float(np.exp(what_if_pred["mean"].iloc[0]))
+what_if_ci_low = float(np.exp(what_if_pred["mean_ci_lower"].iloc[0]))
+what_if_ci_high = float(np.exp(what_if_pred["mean_ci_upper"].iloc[0]))
 what_if_price_per_acre = what_if_price / what_if_acres
 what_if_budget_gap = max(0.0, what_if_price - budget)
 
@@ -1108,10 +1184,48 @@ wc3.metric("Additional Cash Needed", f"${what_if_budget_gap:,.0f}")
 wc4.metric("Model Distance", what_if_distance)
 
 st.caption(
-    f"{what_if_location} is modeled as {what_if_distance}; the regression only uses acreage and Close/Further location."
+    f"{what_if_location} is modeled as {what_if_distance}; the regression uses acreage and Close/Further location only."
 )
 
-# City chart uses the same property-table criteria, including the default budget filter.
+st.write(
+    f"{ci_pct}% CI for estimated mean price: "
+    f"${what_if_ci_low:,.0f} – ${what_if_ci_high:,.0f}"
+)
+
+# ------------------------------------------------------------
+# Optional text filter. Conservative and explicitly not part of
+# the valuation model.
+# ------------------------------------------------------------
+with st.expander("Optional text-based property filter", expanded=False):
+    st.caption(
+        "This filter uses listing-description language only. It is conservative and can have false negatives/positives; it is not used in the regression."
+    )
+    perk_filter = st.selectbox(
+        "Perk / soil site description",
+        ["All", "Yes", "No", "Unknown"],
+        index=0,
+    )
+
+    filtered_text_df = property_df.copy()
+    if perk_filter != "All":
+        filtered_text_df = filtered_text_df[
+            filtered_text_df["has_perked"].eq(perk_filter)
+        ].copy()
+
+    if filtered_text_df.empty:
+        st.info("No properties match the perk/site description filter.")
+    else:
+        perk_stats = (
+            filtered_text_df["price"]
+            .agg(["count", "mean", "median"])
+            .rename({"count": "Listings", "mean": "Average Price", "median": "Median Price"})
+            .to_frame("Value")
+        )
+        st.dataframe(perk_stats, width="stretch")
+
+# ------------------------------------------------------------
+# City value counts using the same active property-table filters.
+# ------------------------------------------------------------
 city_count_base = full_df[
     full_df["status"].astype(str).str.upper().isin(show_status)
     & full_df["Distance"].isin(selected_distance)
@@ -1121,6 +1235,11 @@ city_count_base = full_df[
 if budget_only:
     city_count_base = city_count_base[
         city_count_base["price"].le(budget)
+    ].copy()
+
+if perk_filter != "All":
+    city_count_base = city_count_base[
+        city_count_base["has_perked"].eq(perk_filter)
     ].copy()
 
 city_counts = (
@@ -1149,6 +1268,64 @@ else:
         xaxis_title="City",
         yaxis_title="Qualifying Property Count",
         xaxis_tickangle=-45,
+    )
+    st.plotly_chart(fig, width="stretch")
+
+# ------------------------------------------------------------
+# City price map. Uses mean lat/lon of listings in each city/group.
+# Sold prices drive the average/median price statistics on the map.
+# ------------------------------------------------------------
+map_base = full_df[
+    full_df["status"].astype(str).str.upper().eq("SOLD")
+    & full_df["Distance"].isin(selected_distance)
+    & full_df["lot_acres"].between(table_min_acres, table_max_acres)
+].copy()
+
+if budget_only:
+    map_base = map_base[map_base["price"].le(budget)].copy()
+
+if perk_filter != "All":
+    map_base = map_base[map_base["has_perked"].eq(perk_filter)].copy()
+
+map_base["latitude"] = pd.to_numeric(map_base["latitude"], errors="coerce")
+map_base["longitude"] = pd.to_numeric(map_base["longitude"], errors="coerce")
+map_base = map_base.dropna(subset=["city", "latitude", "longitude", "price"])
+
+city_map_df = (
+    map_base
+    .groupby(["city", "Distance"], as_index=False)
+    .agg(
+        latitude=("latitude", "mean"),
+        longitude=("longitude", "mean"),
+        average_price=("price", "mean"),
+        median_price=("price", "median"),
+        sold_count=("price", "count"),
+    )
+)
+
+st.subheader("City sold-price map")
+
+if city_map_df.empty:
+    st.info("No sold properties with valid latitude/longitude match the current filters.")
+else:
+    fig = px.scatter_map(
+        city_map_df,
+        lat="latitude",
+        lon="longitude",
+        color="Distance",
+        size="sold_count",
+        hover_name="city",
+        hover_data={
+            "average_price": ":$,.0f",
+            "median_price": ":$,.0f",
+            "sold_count": True,
+            "latitude": False,
+            "longitude": False,
+        },
+        zoom=8,
+        height=600,
+        map_style="open-street-map",
+        title="Average and Median Sold Price by City",
     )
     st.plotly_chart(fig, width="stretch")
 
