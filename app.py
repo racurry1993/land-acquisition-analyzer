@@ -1203,7 +1203,9 @@ with tab5:
     else:
         fig = px.scatter_map(
             zip_stats,
-            lat="latitude", lon="longitude", color="Distance", size="sold_count",
+            lat="latitude", 
+            lon="longitude", 
+            color="Distance", 
             size="avg_sold_price",
             hover_name="city",
             hover_data={
