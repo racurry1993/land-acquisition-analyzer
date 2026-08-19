@@ -1094,65 +1094,183 @@ st.write(
 # ------------------------------------------------------------
 # MARKET AVAILABILITY
 # ------------------------------------------------------------
-st.markdown("**Market availability**")
+st.markdown("**Market availability by distance**")
 
-availability = probability_of_listing(
-    df=full_df,
-    budget=budget,
-    min_acres=what_if_acres,
-    distance=what_if_distance,
-    horizon_days=90,
-    history_days=sold_days,
-    perk_filter=perk_filter,
-)
+# Calculate the availability for BOTH geography groups using
+# the exact same what-if acreage, budget, perk filter, and
+# historical lookback. Only Distance changes.
+availability_by_distance = {}
 
-av1, av2, av3 = st.columns(3)
-av1.metric(
-    "90-Day Chance of >= 1",
-    f"{availability['probability']:.0%}",
-)
-av2.metric(
-    "Historical Qualifying Arrivals",
-    f"{availability['historical_arrivals']:,}",
-)
-av3.metric(
-    "Expected Qualifying Arrivals",
-    f"{availability['expected_arrivals']:.1f}",
-)
-
-st.caption(
-    f"Availability estimate uses listing dates over the prior {sold_days} days and a Poisson arrival assumption. "
-    "It is separate from the valuation model."
-)
-
-# 30 / 60 / 90 / 180-day probabilities
-horizons = [30, 60, 90, 180]
-prob_rows = []
-for days in horizons:
-    result = probability_of_listing(
+for distance in ["Close", "Further"]:
+    availability_by_distance[distance] = probability_of_listing(
         df=full_df,
         budget=budget,
         min_acres=what_if_acres,
-        distance=what_if_distance,
-        horizon_days=days,
+        distance=distance,
+        horizon_days=90,
         history_days=sold_days,
         perk_filter=perk_filter,
     )
-    prob_rows.append({"Days": days, "Probability": result["probability"]})
 
-prob_df = pd.DataFrame(prob_rows)
+close_availability = availability_by_distance["Close"]
+further_availability = availability_by_distance["Further"]
+
+# ------------------------------------------------------------
+# Side-by-side 90-day comparison
+# ------------------------------------------------------------
+
+close_col, further_col = st.columns(2)
+
+with close_col:
+    st.markdown("### Close")
+
+    st.metric(
+        "90-Day Chance of >= 1",
+        f"{close_availability['probability']:.0%}",
+    )
+
+    st.metric(
+        "Historical Qualifying Arrivals",
+        f"{close_availability['historical_arrivals']:,}",
+    )
+
+    st.metric(
+        "Expected Qualifying Arrivals",
+        f"{close_availability['expected_arrivals']:.1f}",
+    )
+
+with further_col:
+    st.markdown("### Further")
+
+    st.metric(
+        "90-Day Chance of >= 1",
+        f"{further_availability['probability']:.0%}",
+    )
+
+    st.metric(
+        "Historical Qualifying Arrivals",
+        f"{further_availability['historical_arrivals']:,}",
+    )
+
+    st.metric(
+        "Expected Qualifying Arrivals",
+        f"{further_availability['expected_arrivals']:.1f}",
+    )
+
+availability_gap = (
+    further_availability["probability"]
+    - close_availability["probability"]
+)
+
+st.info(
+    f"**Availability comparison:** Further has a "
+    f"**{availability_gap:+.0%}** higher 90-day probability of "
+    f"seeing at least one qualifying property than Close, "
+    f"holding acreage, budget, and perk criteria constant."
+)
+
+st.caption(
+    f"Availability uses listing dates over the prior {sold_days} days "
+    "and a Poisson arrival assumption. It is separate from the valuation model."
+)
+
+# ------------------------------------------------------------
+# 30 / 60 / 90 / 180-day probabilities for BOTH distances
+# ------------------------------------------------------------
+
+horizons = [30, 60, 90, 180]
+prob_rows = []
+
+for distance in ["Close", "Further"]:
+
+    for days in horizons:
+
+        result = probability_of_listing(
+            df=full_df,
+            budget=budget,
+            min_acres=what_if_acres,
+            distance=distance,
+            horizon_days=days,
+            history_days=sold_days,
+            perk_filter=perk_filter,
+        )
+
+        prob_rows.append({
+            "Distance": distance,
+            "Days": days,
+            "Probability": result["probability"],
+            "Expected Arrivals": result["expected_arrivals"],
+            "Historical Arrivals": result["historical_arrivals"],
+        })
+
+probability_df = pd.DataFrame(prob_rows)
+
+# ------------------------------------------------------------
+# Probability curve
+# ------------------------------------------------------------
 
 fig_avail = px.line(
-    prob_df,
+    probability_df,
     x="Days",
     y="Probability",
+    color="Distance",
     markers=True,
     title="Probability of Seeing at Least One Qualifying Property",
 )
-fig_avail.update_yaxes(tickformat=".0%", range=[0, 1])
-fig_avail.update_xaxes(dtick=30, title="Days")
-fig_avail.update_layout(yaxis_title="Probability")
-st.plotly_chart(fig_avail, width="stretch")
+
+fig_avail.update_yaxes(
+    tickformat=".0%",
+    range=[0, 1],
+)
+
+fig_avail.update_xaxes(
+    dtick=30,
+    title="Days",
+)
+
+fig_avail.update_layout(
+    yaxis_title="Probability",
+    legend_title="Location",
+)
+
+st.plotly_chart(
+    fig_avail,
+    width="stretch",
+)
+
+# ------------------------------------------------------------
+# Probability comparison table
+# ------------------------------------------------------------
+
+probability_table = (
+    probability_df
+    .pivot(
+        index="Days",
+        columns="Distance",
+        values="Probability",
+    )
+    .reset_index()
+)
+
+st.dataframe(
+    probability_table,
+    hide_index=True,
+    width="stretch",
+    column_config={
+        "Days": st.column_config.NumberColumn(
+            "Days",
+            format="%d",
+        ),
+        "Close": st.column_config.NumberColumn(
+            "Close",
+            format="%.1%",
+        ),
+        "Further": st.column_config.NumberColumn(
+            "Further",
+            format="%.1%",
+        ),
+    },
+)
 
 # ============================================================
 # VISUALS
