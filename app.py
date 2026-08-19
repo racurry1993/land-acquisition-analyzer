@@ -1159,17 +1159,43 @@ with tab5:
         & map_base["price"].notna()
     ].copy()
 
-    # Aggregate first by ZIP + Distance so each map marker represents a real ZIP.
-    zip_stats = (
-        map_base.groupby(["zip_code", "Distance"], as_index=False)
+    # Aggregate robustly by ZIP + Distance. Some HomeHarvest/Pandas
+    # combinations can raise an error with named aggregation + as_index=False,
+    # so build each statistic separately and merge them.
+    group_cols = ["zip_code", "Distance"]
+
+    coords = (
+        map_base.groupby(group_cols)[["latitude", "longitude"]]
+        .mean()
+        .reset_index()
+    )
+
+    price_stats = (
+        map_base.groupby(group_cols)["price"]
         .agg(
-            latitude=("latitude", "mean"),
-            longitude=("longitude", "mean"),
-            average_price=("price", "mean"),
-            median_price=("price", "median"),
-            sold_count=("price", "count"),
-            city=("city", lambda s: s.dropna().mode().iat[0] if not s.dropna().mode().empty else ""),
+            average_price="mean",
+            median_price="median",
+            sold_count="count",
         )
+        .reset_index()
+    )
+
+    city_stats = (
+        map_base.groupby(group_cols)["city"]
+        .agg(
+            city=lambda s: (
+                s.dropna().astype(str).mode().iat[0]
+                if not s.dropna().empty and not s.dropna().astype(str).mode().empty
+                else ""
+            )
+        )
+        .reset_index()
+    )
+
+    zip_stats = (
+        coords
+        .merge(price_stats, on=group_cols, how="left")
+        .merge(city_stats, on=group_cols, how="left")
     )
 
     if zip_stats.empty:
