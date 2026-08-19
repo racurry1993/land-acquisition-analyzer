@@ -59,6 +59,7 @@ DEFAULT_LOCATION_2 = [
 ]
 
 SOLD_LOOKBACK_DAYS = 180
+CI_LEVEL = 0.80
 EXCLUDED_PROPERTY_ID = "7778085034"
 MODEL_FORMULA = "np.log(price) ~ np.log(lot_acres) + C(Distance)"
 
@@ -742,7 +743,7 @@ st.caption(
 curve_df = build_prediction_curve(
     final_model,
     acreage_levels,
-    ci_alpha=1 - ci_level,
+    ci_alpha=1 - CI_LEVEL,
 )
 
 
@@ -819,7 +820,7 @@ for acre in acreage_levels:
 inventory_df = pd.DataFrame(inventory_rows)
 wide = wide.merge(inventory_df, on="acres", how="left")
 
-ci_pct = int(ci_level * 100)
+ci_pct = int(CI_LEVEL * 100)
 display_df = wide.rename(columns={
     "acres": "Acres",
     "acreage_category": "Acreage Category",
@@ -1177,7 +1178,7 @@ what_if_prediction_df = pd.DataFrame({
 
 what_if_pred = final_model.get_prediction(
     what_if_prediction_df
-).summary_frame(alpha=1 - ci_level)
+).summary_frame(alpha=1 - CI_LEVEL)
 
 what_if_price = float(np.exp(what_if_pred["mean"].iloc[0]))
 what_if_ci_low = float(np.exp(what_if_pred["mean_ci_lower"].iloc[0]))
