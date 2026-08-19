@@ -332,7 +332,7 @@ def scrape_locations(
 # EXACT NOTEBOOK MODEL
 # ============================================================
 
-def fit_notebook_model(full_df: pd.DataFrame):
+def fit_notebook_model(full_df: pd.DataFrame, min_acres: float, max_acres: float):
     """
     Fit the exact notebook model:
 
@@ -361,11 +361,10 @@ def fit_notebook_model(full_df: pd.DataFrame):
     )
 
     model_df = model_df[
-        model_df["price"] > 0
-    ].copy()
-
-    model_df = model_df[
-        model_df["lot_acres"] > 0
+        (model_df["lot_acres"] >= min_acres)
+        & (model_df["lot_acres"] <= max_acres)
+        & (model_df["price"] > 0)
+        & (model_df["lot_acres"] > 0)
     ].copy()
 
     model_df = model_df.dropna(
@@ -591,7 +590,9 @@ summary_cols[5].metric("Sold lookback", f"{sold_days} days")
 # ============================================================
 
 try:
-    final_model, model_df = fit_notebook_model(full_df)
+    final_model, model_df = fit_notebook_model(
+        full_df, min_acres, max_acres
+    )
 except Exception as exc:
     st.error(f"Model training failed: {exc}")
     st.exception(exc)
@@ -862,133 +863,17 @@ st.dataframe(
 )
 
 # ============================================================
-# VISUALS
-# ============================================================
-
-st.subheader("Valuation visuals")
-
-tab1, tab2, tab3, tab4, tab5 = st.tabs([
-    "Price / Acre Boxplot",
-    "Observed Log / Log",
-    "Acquisition Curve",
-    "City Value Counts",
-    "City Price Map",
-])
-
-with tab1:
-    box_df = active_df[active_df["price_per_acre"].gt(0)].copy()
-
-    if not box_df.empty:
-        fig = px.box(
-            box_df,
-            x="Distance",
-            y="price_per_acre",
-            points="all",
-            log_y=True,
-            hover_data=[
-                "property_id",
-                "street",
-                "city",
-                "lot_acres",
-                "price",
-                "property_url",
-            ],
-            title="Current Active Price per Acre",
-        )
-        st.plotly_chart(fig, width="stretch")
-
-with tab2:
-    fig = go.Figure()
-
-    for distance in ["Further", "Close"]:
-        sub = model_df[(model_df["Distance"] == distance) & (model_df["lot_acres"] <= max_acres)]
-
-        fig.add_trace(
-            go.Scatter(
-                x=sub["lot_acres"],
-                y=sub["price"],
-                mode="markers",
-                name=f"{distance} observed",
-                text=sub["property_id"].astype(str),
-                hovertemplate=(
-                    "Property: %{text}<br>"
-                    "Acres: %{x:.2f}<br>"
-                    "Price: $%{y:,.0f}<br>"
-                    "<extra></extra>"
-                ),
-            )
-        )
-
-    # Model fitted lines across the selected curve range.
-    for distance in ["Further", "Close"]:
-        sub = curve_df[curve_df["Distance"] == distance]
-        fig.add_trace(
-            go.Scatter(
-                x=sub["acres"],
-                y=sub["estimate"],
-                mode="lines+markers",
-                name=f"{distance} model",
-            )
-        )
-
-    fig.update_xaxes(
-        type="log",
-        title="Acres",
-    )
-    fig.update_yaxes(
-        type="log",
-        title="Price",
-    )
-    fig.update_layout(
-        title="Observed Properties + Exact Notebook Model",
-        hovermode="closest",
-    )
-
-    st.plotly_chart(fig, width="stretch")
-
-with tab3:
-    fig = go.Figure()
-
-    for distance in ["Further", "Close"]:
-        sub = curve_df[curve_df["Distance"] == distance]
-
-        fig.add_trace(
-            go.Scatter(
-                x=sub["acres"],
-                y=sub["estimate"],
-                mode="lines+markers",
-                name=distance,
-            )
-        )
-
-    fig.add_hline(
-        y=budget,
-        line_dash="dash",
-        annotation_text=f"Budget: ${budget:,.0f}",
-    )
-
-    fig.update_layout(
-        title="Modeled Acquisition Cost by Acreage",
-        xaxis_title="Target Acres",
-        yaxis_title="Predicted Price",
-        hovermode="x unified",
-    )
-
-    st.plotly_chart(fig, width="stretch")
-
-
-
-# ============================================================
 # PROPERTY TABLE
 # ============================================================
 
 st.subheader("Property inventory")
 
 with st.expander("Property table filters", expanded=False):
+    # Default to the same population used by the model.
     show_status = st.multiselect(
         "Statuses",
         options=["FOR_SALE", "CONTINGENT", "PENDING", "SOLD"],
-        default=["FOR_SALE", "SOLD"],
+        default=["FOR_SALE", "CONTINGENT", "PENDING", "SOLD"],
     )
 
     table_min_acres = st.number_input(
@@ -1016,62 +901,47 @@ with st.expander("Property table filters", expanded=False):
         default=["Close", "Further"],
     )
 
-property_df = full_df[
-    full_df["status"].astype(str).str.upper().isin(show_status)
-    & full_df["Distance"].isin(selected_distance)
-    & full_df["lot_acres"].between(table_min_acres, table_max_acres)
+    perk_filter = st.selectbox(
+        "Perk / soil site description",
+        ["All", "Yes", "No", "Unknown"],
+        index=0,
+    )
+
+# Match the model population first, then apply optional presentation filters.
+property_df = model_df.copy()
+property_df["status_norm"] = property_df["status"].astype(str).str.upper()
+property_df = property_df[
+    property_df["status_norm"].isin(show_status)
+    & property_df["Distance"].isin(selected_distance)
+    & property_df["lot_acres"].between(table_min_acres, table_max_acres)
 ].copy()
 
 if budget_only:
-    property_df = property_df[
-        property_df["price"].le(budget)
-    ].copy()
+    property_df = property_df[property_df["price"].le(budget)].copy()
+
+if perk_filter != "All":
+    property_df = property_df[property_df["has_perked"].eq(perk_filter)].copy()
 
 if property_df.empty:
     st.info("No properties match the current filters.")
 else:
     property_df["Listing"] = property_df["property_url"].where(
-        property_df["property_url"].astype(str).str.startswith(
-            ("http://", "https://")
-        ),
+        property_df["property_url"].astype(str).str.startswith(("http://", "https://")),
         "",
     )
 
     desired = [
-        "Distance",
-        "Listing",
-        "property_id",
-        "status",
-        "_search_location",
-        "street",
-        "city",
-        "county",
-        "state",
-        "zip_code",
-        "lot_acres",
-        "price",
-        "price_per_acre",
-        "list_price",
-        "sold_price",
-        "beds",
-        "full_baths",
-        "half_baths",
-        "sqft",
-        "year_built",
-        "days_on_mls",
-        "list_date",
-        "last_sold_date",
-        "text",
+        "Distance", "Listing", "property_id", "status", "_search_location",
+        "street", "city", "county", "state", "zip_code", "lot_acres",
+        "price", "price_per_acre", "list_price", "sold_price", "has_perked",
+        "beds", "full_baths", "half_baths", "sqft", "year_built",
+        "days_on_mls", "list_date", "last_sold_date", "latitude", "longitude", "text",
     ]
-
     desired = [c for c in desired if c in property_df.columns]
     remaining = [
         c for c in property_df.columns
-        if c not in desired
-        and not c.startswith("_")
-        and c != "property_url"
+        if c not in desired and not c.startswith("_") and c not in {"property_url", "status_norm"}
     ]
-
     property_table = property_df[desired + remaining].copy()
 
     st.dataframe(
@@ -1081,36 +951,18 @@ else:
         hide_index=True,
         column_config={
             "Listing": st.column_config.LinkColumn(
-                "Listing",
-                display_text="Open Listing ↗",
-                help="Opens the Realtor.com listing.",
+                "Listing", display_text="Open Listing ↗", help="Opens the Realtor.com listing."
             ),
-            "lot_acres": st.column_config.NumberColumn(
-                "Acres",
-                format="%.2f",
-            ),
-            "price": st.column_config.NumberColumn(
-                "Price",
-                format="$%,.0f",
-            ),
-            "price_per_acre": st.column_config.NumberColumn(
-                "$/Acre",
-                format="$%,.0f",
-            ),
-            "list_price": st.column_config.NumberColumn(
-                "List Price",
-                format="$%,.0f",
-            ),
-            "sold_price": st.column_config.NumberColumn(
-                "Sold Price",
-                format="$%,.0f",
-            ),
+            "lot_acres": st.column_config.NumberColumn("Acres", format="%.2f"),
+            "price": st.column_config.NumberColumn("Price", format="$%,.0f"),
+            "price_per_acre": st.column_config.NumberColumn("$/Acre", format="$%,.0f"),
+            "list_price": st.column_config.NumberColumn("List Price", format="$%,.0f"),
+            "sold_price": st.column_config.NumberColumn("Sold Price", format="$%,.0f"),
         },
     )
 
     st.caption(
-        f"Showing {len(property_table):,} properties. "
-        "Listing links use the property_url returned by HomeHarvest."
+        f"Showing {len(property_table):,} properties from the same acreage/model population, after the selected table filters."
     )
 
     st.download_button(
@@ -1120,9 +972,8 @@ else:
         mime="text/csv",
     )
 
-
 # ============================================================
-# WHAT-IF CALCULATOR + CITY COUNTS + CITY MAP
+# WHAT-IF CALCULATOR
 # ============================================================
 
 st.subheader("What-if calculator")
@@ -1134,33 +985,22 @@ for group_name, locations in [("Close", location_1), ("Further", location_2)]:
         if city_name:
             city_lookup[city_name] = group_name
 
-for _, row in full_df[["city", "Distance"]].dropna().drop_duplicates().iterrows():
+for _, row in model_df[["city", "Distance"]].dropna().drop_duplicates().iterrows():
     city_name = str(row["city"]).strip()
     if city_name and city_name not in city_lookup:
         city_lookup[city_name] = row["Distance"]
 
 what_if_options = ["Close", "Further"] + sorted(
-    city for city in city_lookup.keys()
-    if city not in {"Close", "Further"}
+    city for city in city_lookup.keys() if city not in {"Close", "Further"}
 )
 
 w1, w2 = st.columns(2)
-
 with w1:
     what_if_acres = st.number_input(
-        "Exact acreage",
-        min_value=0.1,
-        max_value=5000.0,
-        value=float(min_acres),
-        step=0.1,
+        "Exact acreage", min_value=0.1, max_value=5000.0, value=float(min_acres), step=0.1,
     )
-
 with w2:
-    what_if_location = st.selectbox(
-        "Location",
-        options=what_if_options,
-        index=0,
-    )
+    what_if_location = st.selectbox("Location", options=what_if_options, index=0)
 
 what_if_distance = (
     what_if_location
@@ -1170,16 +1010,10 @@ what_if_distance = (
 
 what_if_prediction_df = pd.DataFrame({
     "lot_acres": [what_if_acres],
-    "Distance": pd.Categorical(
-        [what_if_distance],
-        categories=["Close", "Further"]
-    ),
+    "Distance": pd.Categorical([what_if_distance], categories=["Close", "Further"]),
 })
 
-what_if_pred = final_model.get_prediction(
-    what_if_prediction_df
-).summary_frame(alpha=1 - CI_LEVEL)
-
+what_if_pred = final_model.get_prediction(what_if_prediction_df).summary_frame(alpha=1 - CI_LEVEL)
 what_if_price = float(np.exp(what_if_pred["mean"].iloc[0]))
 what_if_ci_low = float(np.exp(what_if_pred["mean_ci_lower"].iloc[0]))
 what_if_ci_high = float(np.exp(what_if_pred["mean_ci_upper"].iloc[0]))
@@ -1195,148 +1029,170 @@ wc4.metric("Model Distance", what_if_distance)
 st.caption(
     f"{what_if_location} is modeled as {what_if_distance}; the regression uses acreage and Close/Further location only."
 )
-
 st.write(
-    f"{ci_pct}% CI for estimated mean price: "
-    f"${what_if_ci_low:,.0f} – ${what_if_ci_high:,.0f}"
+    f"{int(CI_LEVEL * 100)}% CI for estimated mean price: ${what_if_ci_low:,.0f} – ${what_if_ci_high:,.0f}"
 )
 
-# ------------------------------------------------------------
-# Optional text filter. Conservative and explicitly not part of
-# the valuation model.
-# ------------------------------------------------------------
-with st.expander("Optional text-based property filter", expanded=False):
-    st.caption(
-        "This filter uses listing-description language only. It is conservative and can have false negatives/positives; it is not used in the regression."
-    )
-    perk_filter = st.selectbox(
-        "Perk / soil site description",
-        ["All", "Yes", "No", "Unknown"],
-        index=0,
-    )
+# ============================================================
+# VISUALS
+# ============================================================
 
-    filtered_text_df = property_df.copy()
-    if perk_filter != "All":
-        filtered_text_df = filtered_text_df[
-            filtered_text_df["has_perked"].eq(perk_filter)
-        ].copy()
+st.subheader("Valuation visuals")
 
-    if filtered_text_df.empty:
-        st.info("No properties match the perk/site description filter.")
-    else:
-        perk_stats = (
-            filtered_text_df["price"]
-            .agg(["count", "mean", "median"])
-            .rename({"count": "Listings", "mean": "Average Price", "median": "Median Price"})
-            .to_frame("Value")
+tab1, tab2, tab3, tab4, tab5 = st.tabs([
+    "Price / Acre Boxplot",
+    "Observed Log / Log",
+    "Acquisition Curve",
+    "City Value Counts",
+    "City Price Map",
+])
+
+with tab1:
+    box_df = model_df[model_df["price_per_acre"].gt(0)].copy()
+    if not box_df.empty:
+        fig = px.box(
+            box_df,
+            x="Distance", y="price_per_acre", points="all", log_y=True,
+            hover_data=["property_id", "street", "city", "zip_code", "lot_acres", "price", "property_url"],
+            title="Model Population Price per Acre",
         )
-        st.dataframe(perk_stats, width="stretch")
+        st.plotly_chart(fig, width="stretch")
 
-# ------------------------------------------------------------
-# City value counts using the same active property-table filters.
-# ------------------------------------------------------------
-city_count_base = full_df[
-    full_df["status"].astype(str).str.upper().isin(show_status)
-    & full_df["Distance"].isin(selected_distance)
-    & full_df["lot_acres"].between(table_min_acres, table_max_acres)
-].copy()
+with tab2:
+    fig = go.Figure()
+    for distance in ["Further", "Close"]:
+        sub = model_df[
+            (model_df["Distance"] == distance)
+            & (model_df["lot_acres"] <= max_acres)
+            & (model_df["lot_acres"] >= min_acres)
+        ]
+        fig.add_trace(go.Scatter(
+            x=sub["lot_acres"], y=sub["price"], mode="markers", name=f"{distance} observed",
+            text=sub["property_id"].astype(str),
+            hovertemplate="Property: %{text}<br>Acres: %{x:.2f}<br>Price: $%{y:,.0f}<extra></extra>",
+        ))
+    for distance in ["Further", "Close"]:
+        sub = curve_df[curve_df["Distance"] == distance]
+        fig.add_trace(go.Scatter(
+            x=sub["acres"], y=sub["estimate"], mode="lines+markers", name=f"{distance} model",
+        ))
+    fig.update_xaxes(type="log", title="Acres")
+    fig.update_yaxes(type="log", title="Price")
+    fig.update_layout(title="Observed Properties + Exact Notebook Model", hovermode="closest")
+    st.plotly_chart(fig, width="stretch")
 
-if budget_only:
-    city_count_base = city_count_base[
-        city_count_base["price"].le(budget)
-    ].copy()
-
-if perk_filter != "All":
-    city_count_base = city_count_base[
-        city_count_base["has_perked"].eq(perk_filter)
-    ].copy()
-
-city_counts = (
-    city_count_base
-    .groupby(["city", "Distance"])
-    .size()
-    .reset_index(name="Count")
-)
-
-st.subheader("Qualifying properties by city")
-
-if city_counts.empty:
-    st.info("No properties match the current criteria.")
-else:
-    fig = px.bar(
-        city_counts.sort_values(["Count", "city"], ascending=[False, True]),
-        x="city",
-        y="Count",
-        color="Distance",
-        barmode="group",
-        text="Count",
-        title="Property Value Counts by City",
-    )
-    fig.update_traces(textposition="outside")
+with tab3:
+    fig = go.Figure()
+    for distance in ["Further", "Close"]:
+        sub = curve_df[curve_df["Distance"] == distance]
+        fig.add_trace(go.Scatter(
+            x=sub["acres"], y=sub["estimate"], mode="lines+markers", name=distance,
+        ))
+        fig.add_trace(go.Scatter(
+            x=pd.concat([sub["acres"], sub["acres"][::-1]]),
+            y=pd.concat([sub["ci_high"], sub["ci_low"][::-1]]),
+            fill="toself", line=dict(width=0), hoverinfo="skip", showlegend=False, opacity=0.15,
+        ))
+    fig.add_hline(y=budget, line_dash="dash", annotation_text=f"Budget: ${budget:,.0f}")
     fig.update_layout(
-        xaxis_title="City",
-        yaxis_title="Qualifying Property Count",
-        xaxis_tickangle=-45,
+        title="Modeled Acquisition Cost by Acreage",
+        xaxis_title="Target Acres", yaxis_title="Predicted Price", hovermode="x unified",
     )
     st.plotly_chart(fig, width="stretch")
 
 # ------------------------------------------------------------
-# City price map. Uses mean lat/lon of listings in each city/group.
-# Sold prices drive the average/median price statistics on the map.
+# City value counts: same model population + selected filters.
 # ------------------------------------------------------------
-map_base = full_df[
-    full_df["status"].astype(str).str.upper().eq("SOLD")
-    & full_df["Distance"].isin(selected_distance)
-    & full_df["lot_acres"].between(table_min_acres, table_max_acres)
-].copy()
+with tab4:
+    city_count_base = model_df.copy()
+    city_count_base["status_norm"] = city_count_base["status"].astype(str).str.upper()
+    city_count_base = city_count_base[
+        city_count_base["status_norm"].isin(show_status)
+        & city_count_base["Distance"].isin(selected_distance)
+        & city_count_base["lot_acres"].between(table_min_acres, table_max_acres)
+    ].copy()
+    if budget_only:
+        city_count_base = city_count_base[city_count_base["price"].le(budget)].copy()
+    if perk_filter != "All":
+        city_count_base = city_count_base[city_count_base["has_perked"].eq(perk_filter)].copy()
 
-if budget_only:
-    map_base = map_base[map_base["price"].le(budget)].copy()
-
-if perk_filter != "All":
-    map_base = map_base[map_base["has_perked"].eq(perk_filter)].copy()
-
-map_base["latitude"] = pd.to_numeric(map_base["latitude"], errors="coerce")
-map_base["longitude"] = pd.to_numeric(map_base["longitude"], errors="coerce")
-map_base = map_base.dropna(subset=["city", "latitude", "longitude", "price"])
-
-city_map_df = (
-    map_base
-    .groupby(["city", "Distance"], as_index=False)
-    .agg(
-        latitude=("latitude", "mean"),
-        longitude=("longitude", "mean"),
-        average_price=("price", "mean"),
-        median_price=("price", "median"),
-        sold_count=("price", "count"),
+    city_counts = (
+        city_count_base.groupby(["city", "Distance"])
+        .size()
+        .reset_index(name="Count")
     )
-)
 
-st.subheader("City sold-price map")
+    if city_counts.empty:
+        st.info("No properties match the current criteria.")
+    else:
+        fig = px.bar(
+            city_counts.sort_values(["Count", "city"], ascending=[False, True]),
+            x="city", y="Count", color="Distance", barmode="group", text="Count",
+            title="Qualifying Property Counts by City",
+        )
+        fig.update_traces(textposition="outside")
+        fig.update_layout(xaxis_title="City", yaxis_title="Property Count", xaxis_tickangle=-45)
+        st.plotly_chart(fig, width="stretch")
 
-if city_map_df.empty:
-    st.info("No sold properties with valid latitude/longitude match the current filters.")
-else:
-    fig = px.scatter_map(
-        city_map_df,
-        lat="latitude",
-        lon="longitude",
-        color="Distance",
-        size="sold_count",
-        hover_name="city",
-        hover_data={
-            "average_price": ":$,.0f",
-            "median_price": ":$,.0f",
-            "sold_count": True,
-            "latitude": False,
-            "longitude": False,
-        },
-        zoom=8,
-        height=600,
-        map_style="open-street-map",
-        title="Average and Median Sold Price by City",
+# ------------------------------------------------------------
+# City map: use ZIP code to locate aggregated city/Distance points.
+# ------------------------------------------------------------
+with tab5:
+    map_base = model_df[
+        model_df["status"].astype(str).str.upper().eq("SOLD")
+        & model_df["Distance"].isin(selected_distance)
+        & model_df["lot_acres"].between(table_min_acres, table_max_acres)
+    ].copy()
+    if budget_only:
+        map_base = map_base[map_base["price"].le(budget)].copy()
+    if perk_filter != "All":
+        map_base = map_base[map_base["has_perked"].eq(perk_filter)].copy()
+
+    map_base["latitude"] = pd.to_numeric(map_base["latitude"], errors="coerce")
+    map_base["longitude"] = pd.to_numeric(map_base["longitude"], errors="coerce")
+    map_base["zip_code"] = map_base["zip_code"].astype(str).str.strip()
+    map_base = map_base[
+        map_base["zip_code"].ne("")
+        & map_base["zip_code"].ne("nan")
+        & map_base["latitude"].notna()
+        & map_base["longitude"].notna()
+        & map_base["price"].notna()
+    ].copy()
+
+    # Aggregate first by ZIP + Distance so each map marker represents a real ZIP.
+    zip_stats = (
+        map_base.groupby(["zip_code", "Distance"], as_index=False)
+        .agg(
+            latitude=("latitude", "mean"),
+            longitude=("longitude", "mean"),
+            average_price=("price", "mean"),
+            median_price=("price", "median"),
+            sold_count=("price", "count"),
+            city=("city", lambda s: s.dropna().mode().iat[0] if not s.dropna().mode().empty else ""),
+        )
     )
-    st.plotly_chart(fig, width="stretch")
+
+    if zip_stats.empty:
+        st.info("No sold properties with valid ZIP/coordinate information match the current filters.")
+    else:
+        fig = px.scatter_map(
+            zip_stats,
+            lat="latitude", lon="longitude", color="Distance", size="sold_count",
+            hover_name="city",
+            hover_data={
+                "zip_code": True,
+                "average_price": ":$,.0f",
+                "median_price": ":$,.0f",
+                "sold_count": True,
+                "latitude": False,
+                "longitude": False,
+            },
+            zoom=8,
+            height=600,
+            map_style="open-street-map",
+            title="Average and Median Sold Price by ZIP Code",
+        )
+        st.plotly_chart(fig, width="stretch")
 
 
 # ============================================================
@@ -1350,3 +1206,4 @@ st.caption(
     "No smearing correction applied. "
     f"App run: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
 )
+
