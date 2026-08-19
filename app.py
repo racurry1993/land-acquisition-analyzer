@@ -1192,42 +1192,89 @@ with tab5:
         .reset_index()
     )
 
-    zip_stats = (
-        coords
-        .merge(price_stats, on=group_cols, how="left")
-        .merge(city_stats, on=group_cols, how="left")
+    # ============================================================
+    # CLEAN ZIP MAP DATA BEFORE PLOTTING
+    # ============================================================
+
+    # Make sure numeric fields are actually numeric.
+    zip_stats["latitude"] = pd.to_numeric(
+        zip_stats["latitude"],
+        errors="coerce"
     )
+
+    zip_stats["longitude"] = pd.to_numeric(
+        zip_stats["longitude"],
+        errors="coerce"
+    )
+
+    zip_stats["average_price"] = pd.to_numeric(
+        zip_stats["average_price"],
+        errors="coerce"
+    )
+
+    zip_stats["median_price"] = pd.to_numeric(
+        zip_stats["median_price"],
+        errors="coerce"
+    )
+
+    zip_stats["sold_count"] = pd.to_numeric(
+        zip_stats["sold_count"],
+        errors="coerce"
+    )
+
+
+    # Remove invalid map observations.
+    zip_stats = zip_stats[
+        zip_stats["latitude"].notna()
+        &
+        zip_stats["longitude"].notna()
+        &
+        zip_stats["average_price"].notna()
+        &
+        np.isfinite(zip_stats["average_price"])
+        &
+        (zip_stats["average_price"] > 0)
+    ].copy()
 
     if zip_stats.empty:
         st.info(
-            "No sold properties with valid ZIP/coordinate information "
-            "match the current filters."
+            "No valid ZIP-level sold-price observations "
+            "are available for the current filters."
         )
     else:
         fig = px.scatter_map(
             zip_stats,
             lat="latitude",
             lon="longitude",
+            # ----------------------------------------------------
             # Color = Close vs Further
+            # ----------------------------------------------------
             color="Distance",
+            # ----------------------------------------------------
             # Bubble size = average sold price
+            # ----------------------------------------------------
             size="average_price",
-            size_max=35,
+            size_max=40,
+            # ----------------------------------------------------
+            # Hover
+            # ----------------------------------------------------
             hover_name="city",
             hover_data={
                 "zip_code": True,
                 "average_price": ":$,.0f",
                 "median_price": ":$,.0f",
-                "sold_count": True,
+                "sold_count": ":,.0f",
                 "latitude": False,
                 "longitude": False,
             },
             zoom=8,
             height=600,
             map_style="open-street-map",
-            title="Average and Median Sold Price by ZIP Code",
+            title=(
+                "Sold Price by ZIP Code — "
+                "Bubble Size = Average Sold Price"
+            )
         )
-
         st.plotly_chart(
             fig,
             width="stretch"
