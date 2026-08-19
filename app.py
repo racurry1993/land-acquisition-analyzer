@@ -1353,13 +1353,7 @@ selected_df[
 )
 
 
-active_df = selected_df[
-    selected_df[
-        "status_norm"
-    ].eq(
-        "FOR_SALE"
-    )
-].copy()
+active_df = selected_df.copy()
 
 
 sold_df = selected_df[
