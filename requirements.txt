@@ -1,0 +1,7 @@
+streamlit>=1.39,<2
+homeharvest>=0.4,<1
+pandas>=2.2,<3
+numpy>=1.26,<3
+plotly>=5.24,<7
+statsmodels>=0.14,<1
+scikit-learn>=1.5,<2
