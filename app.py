@@ -543,31 +543,237 @@ except Exception as exc:
     st.exception(exc)
     st.stop()
 
+# ============================================================
+# MODEL RESULTS
+# ============================================================
+
+st.subheader("Model Results")
+
+st.caption(
+    "Statistical results are recalculated from the properties "
+    "returned for the currently selected locations."
+)
+
+
+# ------------------------------------------------------------
+# Extract coefficients
+# ------------------------------------------------------------
+
+distance_term = next(
+    (
+        term
+        for term in model.params.index
+        if term.startswith("C(Distance)")
+    ),
+    None
+)
+
+acreage_term = next(
+    (
+        term
+        for term in model.params.index
+        if "log(lot_acres)" in term
+    ),
+    None
+)
+
+
+# ------------------------------------------------------------
+# Close / Further relationship
+#
+# With Close as the reference category:
+#
+# C(Distance)[T.Further] tells us how Further compares
+# with Close.
+#
+# exp(coef) = Further / Close
+#
+# Therefore:
+#
+# Close / Further = 1 / exp(coef)
+# ------------------------------------------------------------
+
+if distance_term is not None:
+
+    distance_coef = model.params[
+        distance_term
+    ]
+
+    distance_pvalue = model.pvalues[
+        distance_term
+    ]
+
+    further_vs_close = np.exp(
+        distance_coef
+    )
+
+    close_vs_further = (
+        1
+        /
+        further_vs_close
+    )
+
+else:
+
+    distance_coef = np.nan
+    distance_pvalue = np.nan
+    close_vs_further = np.nan
+
+
+# ------------------------------------------------------------
+# Acreage elasticity
+# ------------------------------------------------------------
+
+if acreage_term is not None:
+
+    acreage_elasticity = model.params[
+        acreage_term
+    ]
+
+    acreage_pvalue = model.pvalues[
+        acreage_term
+    ]
+
+else:
+
+    acreage_elasticity = np.nan
+    acreage_pvalue = np.nan
+
 
 # ============================================================
-# MODEL AUDIT - USEFUL FOR MATCHING NOTEBOOK
+# TOP MODEL METRICS
 # ============================================================
 
-with st.expander("Model audit / notebook comparison", expanded=False):
-    st.write(f"Formula: `{MODEL_FORMULA}`")
-    st.write(f"Model observations: **{len(model_df):,}**")
-    st.write(
-        "Acreage range in model: "
-        f"**{model_df['lot_acres'].min():.2f} – {model_df['lot_acres'].max():.2f}**"
+m1, m2, m3, m4 = st.columns(4)
+
+
+m1.metric(
+    "Model Observations",
+    f"{int(model.nobs):,}"
+)
+
+
+m2.metric(
+    "R²",
+    f"{model.rsquared:.3f}"
+)
+
+
+m3.metric(
+    "Adjusted R²",
+    f"{model.rsquared_adj:.3f}"
+)
+
+
+m4.metric(
+    "Close / Further",
+    (
+        f"{close_vs_further:.2f}x"
+        if pd.notna(close_vs_further)
+        else "N/A"
     )
-    st.dataframe(
-        model_df["Distance"]
-        .value_counts()
-        .rename("Count")
-        .to_frame()
+)
+
+
+# ============================================================
+# SECOND ROW
+# ============================================================
+
+m5, m6, m7, m8 = st.columns(4)
+
+
+m5.metric(
+    "Distance Coefficient",
+    (
+        f"{distance_coef:.3f}"
+        if pd.notna(distance_coef)
+        else "N/A"
     )
-    st.dataframe(
-        pd.DataFrame({
-            "Coefficient": final_model.params,
-            "P-value": final_model.pvalues,
-        })
+)
+
+
+m6.metric(
+    "Distance p-value",
+    (
+        f"{distance_pvalue:.4f}"
+        if pd.notna(distance_pvalue)
+        else "N/A"
     )
-    st.code(final_model.summary().as_text())
+)
+
+
+m7.metric(
+    "Acreage Elasticity",
+    (
+        f"{acreage_elasticity:.3f}"
+        if pd.notna(acreage_elasticity)
+        else "N/A"
+    )
+)
+
+
+m8.metric(
+    "Acreage p-value",
+    (
+        f"{acreage_pvalue:.4f}"
+        if pd.notna(acreage_pvalue)
+        else "N/A"
+    )
+)
+
+
+# ============================================================
+# INTERPRETATION
+# ============================================================
+
+if (
+    pd.notna(close_vs_further)
+    and
+    pd.notna(acreage_elasticity)
+):
+
+    premium_pct = (
+        close_vs_further - 1
+    ) * 100
+
+    st.info(
+        f"""
+        **Model interpretation:** Holding acreage constant, the model
+        estimates that Close properties are approximately
+        **{close_vs_further:.2f}x** the price of Further properties,
+        equivalent to an estimated **{premium_pct:.0f}% premium**.
+
+        The acreage elasticity is **{acreage_elasticity:.3f}**,
+        meaning a 1% increase in acreage is associated with approximately
+        a **{acreage_elasticity:.3f}% increase in total property price**.
+        """
+    )
+
+
+# ============================================================
+# FORMULA
+# ============================================================
+
+st.markdown("**Model specification**")
+
+st.code(
+    "np.log(price) ~ np.log(lot_acres) + C(Distance)",
+    language="python"
+)
+
+
+# ============================================================
+# FULL REGRESSION OUTPUT
+# ============================================================
+
+with st.expander(
+    "View full regression output",
+    expanded=False
+):
+
+    st.text(
+        model.summary().as_text()
+    )
 
 
 # ============================================================
