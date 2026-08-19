@@ -145,6 +145,64 @@ def build_text_features(df: pd.DataFrame) -> pd.DataFrame:
 
 
 # ============================================================
+# MARKET AVAILABILITY / 90-DAY PROBABILITY
+# ============================================================
+
+def probability_of_listing(
+    df: pd.DataFrame,
+    budget: float,
+    min_acres: float,
+    distance: str,
+    horizon_days: int = 90,
+    history_days: int = 180,
+    perk_filter: str = "All",
+) -> dict:
+    """Estimate probability of >=1 qualifying listing arriving in a future window.
+
+    Uses a simple Poisson arrival model based on historical listing arrivals
+    observed during the available history window. This is separate from the
+    valuation regression.
+    """
+    data = df.copy()
+
+    data["list_date"] = pd.to_datetime(
+        data.get("list_date", pd.Series(pd.NaT, index=data.index)),
+        errors="coerce",
+    )
+
+    data["price"] = pd.to_numeric(data["price"], errors="coerce")
+    data["lot_acres"] = pd.to_numeric(data["lot_acres"], errors="coerce")
+
+    cutoff = pd.Timestamp.now() - pd.Timedelta(days=int(history_days))
+
+    qualifying = data[
+        (data["Distance"] == distance)
+        & (data["lot_acres"] >= float(min_acres))
+        & (data["price"] <= float(budget))
+        & (data["price"] > 0)
+        & (data["list_date"] >= cutoff)
+    ].copy()
+
+    if perk_filter != "All" and "has_perked" in qualifying.columns:
+        qualifying = qualifying[qualifying["has_perked"].eq(perk_filter)].copy()
+
+    if "property_id" in qualifying.columns:
+        qualifying = qualifying.drop_duplicates(subset="property_id")
+
+    arrivals = len(qualifying)
+    daily_rate = arrivals / max(float(history_days), 1.0)
+    expected_arrivals = daily_rate * float(horizon_days)
+    probability = 1.0 - np.exp(-expected_arrivals)
+
+    return {
+        "probability": float(probability),
+        "historical_arrivals": int(arrivals),
+        "expected_arrivals": float(expected_arrivals),
+        "daily_rate": float(daily_rate),
+    }
+
+
+# ============================================================
 # ACREAGE LEVELS
 # ============================================================
 
@@ -1032,6 +1090,69 @@ st.caption(
 st.write(
     f"{int(CI_LEVEL * 100)}% CI for estimated mean price: ${what_if_ci_low:,.0f} – ${what_if_ci_high:,.0f}"
 )
+
+# ------------------------------------------------------------
+# MARKET AVAILABILITY
+# ------------------------------------------------------------
+st.markdown("**Market availability**")
+
+availability = probability_of_listing(
+    df=full_df,
+    budget=budget,
+    min_acres=what_if_acres,
+    distance=what_if_distance,
+    horizon_days=90,
+    history_days=sold_days,
+    perk_filter=perk_filter,
+)
+
+av1, av2, av3 = st.columns(3)
+av1.metric(
+    "90-Day Chance of >= 1",
+    f"{availability['probability']:.0%}",
+)
+av2.metric(
+    "Historical Qualifying Arrivals",
+    f"{availability['historical_arrivals']:,}",
+)
+av3.metric(
+    "Expected Qualifying Arrivals",
+    f"{availability['expected_arrivals']:.1f}",
+)
+
+st.caption(
+    f"Availability estimate uses listing dates over the prior {sold_days} days and a Poisson arrival assumption. "
+    "It is separate from the valuation model."
+)
+
+# 30 / 60 / 90 / 180-day probabilities
+horizons = [30, 60, 90, 180]
+prob_rows = []
+for days in horizons:
+    result = probability_of_listing(
+        df=full_df,
+        budget=budget,
+        min_acres=what_if_acres,
+        distance=what_if_distance,
+        horizon_days=days,
+        history_days=sold_days,
+        perk_filter=perk_filter,
+    )
+    prob_rows.append({"Days": days, "Probability": result["probability"]})
+
+prob_df = pd.DataFrame(prob_rows)
+
+fig_avail = px.line(
+    prob_df,
+    x="Days",
+    y="Probability",
+    markers=True,
+    title="Probability of Seeing at Least One Qualifying Property",
+)
+fig_avail.update_yaxes(tickformat=".0%", range=[0, 1])
+fig_avail.update_xaxes(dtick=30, title="Days")
+fig_avail.update_layout(yaxis_title="Probability")
+st.plotly_chart(fig_avail, width="stretch")
 
 # ============================================================
 # VISUALS
