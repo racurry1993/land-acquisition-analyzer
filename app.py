@@ -342,8 +342,8 @@ def fit_notebook_model(full_df: pd.DataFrame):
 def build_prediction_curve(
     model,
     acreage_levels: list[int],
-    ci_alpha: float,
 ) -> pd.DataFrame:
+    """Generate Close and Further point estimates with no intervals."""
 
     rows = []
 
@@ -351,23 +351,18 @@ def build_prediction_curve(
         for distance in ["Close", "Further"]:
             prediction_df = pd.DataFrame({
                 "lot_acres": [acres],
-                "Distance": [distance],
+                "Distance": pd.Categorical(
+                    [distance],
+                    categories=["Close", "Further"]
+                ),
             })
 
-            pred = model.get_prediction(
-                prediction_df
-            ).summary_frame(
-                alpha=ci_alpha
-            )
+            pred = model.get_prediction(prediction_df).summary_frame()
 
             rows.append({
                 "acres": acres,
                 "Distance": distance,
                 "estimate": float(np.exp(pred["mean"].iloc[0])),
-                "ci_low": float(np.exp(pred["mean_ci_lower"].iloc[0])),
-                "ci_high": float(np.exp(pred["mean_ci_upper"].iloc[0])),
-                "pi_low": float(np.exp(pred["obs_ci_lower"].iloc[0])),
-                "pi_high": float(np.exp(pred["obs_ci_upper"].iloc[0])),
             })
 
     return pd.DataFrame(rows)
@@ -433,15 +428,6 @@ with st.sidebar:
         max_value=5000.0,
         value=75.0,
         step=5.0,
-    )
-
-    ci_level = st.slider(
-        "Model confidence level",
-        min_value=0.50,
-        max_value=0.95,
-        value=0.80,
-        step=0.05,
-        format="%.0f%%",
     )
 
     sold_days = st.number_input(
@@ -558,22 +544,18 @@ except Exception as exc:
 st.subheader("Model Results")
 
 st.caption(
-    "Statistical results are recalculated from the properties "
-    "returned for the currently selected locations."
+    "Statistical results are recalculated from the properties returned "
+    "for the currently selected locations."
 )
 
-
-# ------------------------------------------------------------
-# Extract coefficients
-# ------------------------------------------------------------
-
+# The fitted model is stored as final_model.
 distance_term = next(
     (
         term
         for term in final_model.params.index
         if term.startswith("C(Distance)")
     ),
-    None
+    None,
 )
 
 acreage_term = next(
@@ -582,206 +564,101 @@ acreage_term = next(
         for term in final_model.params.index
         if "log(lot_acres)" in term
     ),
-    None
+    None,
 )
 
-
-# ------------------------------------------------------------
-# Close / Further relationship
-#
-# With Close as the reference category:
-#
-# C(Distance)[T.Further] tells us how Further compares
-# with Close.
-#
-# exp(coef) = Further / Close
-#
-# Therefore:
-#
-# Close / Further = 1 / exp(coef)
-# ------------------------------------------------------------
-
 if distance_term is not None:
-
-    distance_coef = final_model.params[
-        distance_term
-    ]
-
-    distance_pvalue = final_model.pvalues[
-        distance_term
-    ]
-
-    further_vs_close = np.exp(
-        distance_coef
-    )
-
-    close_vs_further = (
-        1
-        /
-        further_vs_close
-    )
-
+    distance_coef = final_model.params[distance_term]
+    further_vs_close = np.exp(distance_coef)
+    close_vs_further = 1 / further_vs_close
 else:
-
     distance_coef = np.nan
-    distance_pvalue = np.nan
     close_vs_further = np.nan
 
-
-# ------------------------------------------------------------
-# Acreage elasticity
-# ------------------------------------------------------------
-
 if acreage_term is not None:
-
-    acreage_elasticity = final_model.params[
-        acreage_term
-    ]
-
-    acreage_pvalue = final_model.pvalues[
-        acreage_term
-    ]
-
+    acreage_elasticity = final_model.params[acreage_term]
 else:
-
     acreage_elasticity = np.nan
-    acreage_pvalue = np.nan
 
+# Sold-market statistics for the selected groups.
+sold_df = full_df[
+    full_df["status"].astype(str).str.upper().eq("SOLD")
+].copy()
 
-# ============================================================
-# TOP MODEL METRICS
-# ============================================================
+sold_stats = (
+    sold_df
+    .groupby("Distance")["price"]
+    .agg(["mean", "median", "count"])
+)
 
+def sold_value(distance: str, metric: str):
+    if distance not in sold_stats.index:
+        return np.nan
+    value = sold_stats.loc[distance, metric]
+    return float(value) if pd.notna(value) else np.nan
+
+close_avg_sold = sold_value("Close", "mean")
+close_median_sold = sold_value("Close", "median")
+further_avg_sold = sold_value("Further", "mean")
+further_median_sold = sold_value("Further", "median")
+
+# ------------------------------------------------------------
+# KPI row 1
+# ------------------------------------------------------------
 m1, m2, m3, m4 = st.columns(4)
-
 
 m1.metric(
     "Model Observations",
     f"{int(final_model.nobs):,}"
 )
 
-
 m2.metric(
     "R²",
     f"{final_model.rsquared:.3f}"
 )
-
 
 m3.metric(
     "Adjusted R²",
     f"{final_model.rsquared_adj:.3f}"
 )
 
-
 m4.metric(
     "Close / Further",
-    (
-        f"{close_vs_further:.2f}x"
-        if pd.notna(close_vs_further)
-        else "N/A"
-    )
+    f"{close_vs_further:.2f}x" if pd.notna(close_vs_further) else "N/A",
 )
 
-
-# ============================================================
-# SECOND ROW
-# ============================================================
-
+# ------------------------------------------------------------
+# KPI row 2 - sold market prices
+# ------------------------------------------------------------
 m5, m6, m7, m8 = st.columns(4)
 
-
-m5.metric(
-    "Distance Coefficient",
-    (
-        f"{distance_coef:.3f}"
-        if pd.notna(distance_coef)
-        else "N/A"
+for col, label, value in [
+    (m5, "Close Avg Sold Price", close_avg_sold),
+    (m6, "Close Median Sold Price", close_median_sold),
+    (m7, "Further Avg Sold Price", further_avg_sold),
+    (m8, "Further Median Sold Price", further_median_sold),
+]:
+    col.metric(
+        label,
+        f"${value:,.0f}" if pd.notna(value) else "N/A",
     )
-)
 
-
-m6.metric(
-    "Distance p-value",
-    (
-        f"{distance_pvalue:.4f}"
-        if pd.notna(distance_pvalue)
-        else "N/A"
-    )
-)
-
-
-m7.metric(
-    "Acreage Elasticity",
-    (
-        f"{acreage_elasticity:.3f}"
-        if pd.notna(acreage_elasticity)
-        else "N/A"
-    )
-)
-
-
-m8.metric(
-    "Acreage p-value",
-    (
-        f"{acreage_pvalue:.4f}"
-        if pd.notna(acreage_pvalue)
-        else "N/A"
-    )
-)
-
-
-# ============================================================
-# INTERPRETATION
-# ============================================================
-
-if (
-    pd.notna(close_vs_further)
-    and
-    pd.notna(acreage_elasticity)
-):
-
-    premium_pct = (
-        close_vs_further - 1
-    ) * 100
+if pd.notna(close_vs_further) and pd.notna(acreage_elasticity):
+    premium_pct = (close_vs_further - 1) * 100
 
     st.info(
-        f"""
-        **Model interpretation:** Holding acreage constant, the model
-        estimates that Close properties are approximately
-        **{close_vs_further:.2f}x** the price of Further properties,
-        equivalent to an estimated **{premium_pct:.0f}% premium**.
-
-        The acreage elasticity is **{acreage_elasticity:.3f}**,
-        meaning a 1% increase in acreage is associated with approximately
-        a **{acreage_elasticity:.3f}% increase in total property price**.
-        """
+        f"**Model interpretation:** Holding acreage constant, the model "
+        f"estimates that Close properties are approximately **{close_vs_further:.2f}x** "
+        f"the price of Further properties, equivalent to an estimated **{premium_pct:.0f}% premium**. "
+        f"The acreage elasticity is **{acreage_elasticity:.3f}**, meaning a 1% increase "
+        f"in acreage is associated with approximately a **{acreage_elasticity:.3f}% increase in total property price**."
     )
-
-
-# ============================================================
-# FORMULA
-# ============================================================
 
 st.markdown("**Model specification**")
+st.code("np.log(price) ~ np.log(lot_acres) + C(Distance)", language="python")
 
-st.code(
-    "np.log(price) ~ np.log(lot_acres) + C(Distance)",
-    language="python"
-)
-
-
-# ============================================================
-# FULL REGRESSION OUTPUT
-# ============================================================
-
-with st.expander(
-    "View full regression output",
-    expanded=False
-):
-
-    st.text(
-        final_model.summary().as_text()
-    )
+with st.expander("View full regression output", expanded=False):
+    st.text(final_model.summary().as_text())
 
 
 # ============================================================
@@ -806,7 +683,6 @@ st.caption(
 curve_df = build_prediction_curve(
     final_model,
     acreage_levels,
-    ci_alpha=1 - ci_level,
 )
 
 
@@ -817,13 +693,7 @@ curve_df = build_prediction_curve(
 wide = curve_df.pivot(
     index="acres",
     columns="Distance",
-    values=[
-        "estimate",
-        "ci_low",
-        "ci_high",
-        "pi_low",
-        "pi_high",
-    ],
+    values=["estimate"],
 )
 
 wide.columns = ["_".join(c) for c in wide.columns]
@@ -850,7 +720,6 @@ wide["additional_cash_close"] = (
 wide["additional_cash_further"] = (
     wide["estimate_Further"] - budget
 ).clip(lower=0)
-
 
 # Actual CURRENT inventory by cumulative acreage threshold.
 active_mask = (
@@ -879,16 +748,10 @@ for acre in acreage_levels:
 inventory_df = pd.DataFrame(inventory_rows)
 wide = wide.merge(inventory_df, on="acres", how="left")
 
-ci_pct = int(ci_level * 100)
-
 display_df = wide.rename(columns={
     "acres": "Acres",
     "estimate_Close": "Close Estimated",
     "estimate_Further": "Further Estimated",
-    "ci_low_Close": f"Close {ci_pct}% CI Low",
-    "ci_high_Close": f"Close {ci_pct}% CI High",
-    "ci_low_Further": f"Further {ci_pct}% CI Low",
-    "ci_high_Further": f"Further {ci_pct}% CI High",
     "cost_of_proximity": "Cost of Proximity",
     "close_multiple": "Close / Further",
     "close_premium_pct": "Close Premium",
@@ -908,10 +771,6 @@ st.dataframe(
         "Acres": st.column_config.NumberColumn(format="%.0f"),
         "Close Estimated": st.column_config.NumberColumn(format="$%,.0f"),
         "Further Estimated": st.column_config.NumberColumn(format="$%,.0f"),
-        f"Close {ci_pct}% CI Low": st.column_config.NumberColumn(format="$%,.0f"),
-        f"Close {ci_pct}% CI High": st.column_config.NumberColumn(format="$%,.0f"),
-        f"Further {ci_pct}% CI Low": st.column_config.NumberColumn(format="$%,.0f"),
-        f"Further {ci_pct}% CI High": st.column_config.NumberColumn(format="$%,.0f"),
         "Cost of Proximity": st.column_config.NumberColumn(format="$%,.0f"),
         "Close / Further": st.column_config.NumberColumn(format="%.2fx"),
         "Close Premium": st.column_config.NumberColumn(format="%.1%"),
@@ -929,10 +788,11 @@ st.dataframe(
 
 st.subheader("Valuation visuals")
 
-tab1, tab2, tab3 = st.tabs([
+tab1, tab2, tab3, tab4 = st.tabs([
     "Price / Acre Boxplot",
     "Observed Log / Log",
     "Acquisition Curve",
+    "City Value Counts",
 ])
 
 with tab1:
@@ -961,7 +821,7 @@ with tab2:
     fig = go.Figure()
 
     for distance in ["Further", "Close"]:
-        sub = model_df[model_df["Distance"] == distance]
+        sub = model_df[(model_df["Distance"] == distance) & (model_df["lot_acres"] <= max_acres)]
 
         fig.add_trace(
             go.Scatter(
@@ -1014,18 +874,6 @@ with tab3:
 
         fig.add_trace(
             go.Scatter(
-                x=pd.concat([sub["acres"], sub["acres"][::-1]]),
-                y=pd.concat([sub["ci_high"], sub["ci_low"][::-1]]),
-                fill="toself",
-                line=dict(width=0),
-                hoverinfo="skip",
-                showlegend=False,
-                opacity=0.15,
-            )
-        )
-
-        fig.add_trace(
-            go.Scatter(
                 x=sub["acres"],
                 y=sub["estimate"],
                 mode="lines+markers",
@@ -1047,6 +895,7 @@ with tab3:
     )
 
     st.plotly_chart(fig, width="stretch")
+
 
 
 # ============================================================
@@ -1078,7 +927,7 @@ with st.expander("Property table filters", expanded=False):
 
     budget_only = st.checkbox(
         "Only show properties at or below budget",
-        value=False,
+        value=True,
     )
 
     selected_distance = st.multiselect(
@@ -1097,64 +946,6 @@ if budget_only:
     property_df = property_df[
         property_df["price"].le(budget)
     ].copy()
-
-# ============================================================
-# CITY VALUE-COUNT CHART
-# ============================================================
-# Shows the number of properties meeting the currently selected
-# property-table criteria, grouped by city and split by Distance.
-# ============================================================
-
-if not property_df.empty and "city" in property_df.columns:
-    city_counts = (
-        property_df.assign(
-            city=property_df["city"]
-            .fillna("Unknown")
-            .astype(str)
-            .str.strip()
-            .replace("", "Unknown")
-        )
-        .groupby(["city", "Distance"], as_index=False)
-        .size()
-        .rename(columns={"size": "Properties"})
-        .sort_values("Properties", ascending=False)
-    )
-
-    st.subheader("Properties Meeting Selected Criteria by City")
-    st.caption(
-        "Counts reflect the current property-table filters for status, acreage, "
-        "budget, and Close/Further selection."
-    )
-
-    city_fig = px.bar(
-        city_counts,
-        x="city",
-        y="Properties",
-        color="Distance",
-        barmode="group",
-        text="Properties",
-        title="Property Count by City",
-        labels={
-            "city": "City",
-            "Properties": "Number of Properties",
-            "Distance": "Location Group",
-        },
-    )
-
-    city_fig.update_traces(
-        textposition="outside"
-    )
-
-    city_fig.update_layout(
-        xaxis_tickangle=-45,
-        margin=dict(l=20, r=20, t=60, b=120),
-        legend_title_text="Location Group",
-    )
-
-    st.plotly_chart(
-        city_fig,
-        width="stretch"
-    )
 
 if property_df.empty:
     st.info("No properties match the current filters.")
@@ -1248,6 +1039,118 @@ else:
         file_name="homeharvest_land_properties.csv",
         mime="text/csv",
     )
+
+
+# ============================================================
+# WHAT-IF CALCULATOR + CITY COUNTS
+# ============================================================
+
+st.subheader("What-if calculator")
+
+city_lookup = {}
+for group_name, locations in [("Close", location_1), ("Further", location_2)]:
+    for raw_location in locations:
+        city_name = raw_location.split(",")[0].strip()
+        if city_name:
+            city_lookup[city_name] = group_name
+
+# Also add observed cities from the current HomeHarvest dataset.
+for _, row in full_df[["city", "Distance"]].dropna().drop_duplicates().iterrows():
+    city_name = str(row["city"]).strip()
+    if city_name and city_name not in city_lookup:
+        city_lookup[city_name] = row["Distance"]
+
+what_if_options = ["Close", "Further"] + sorted(
+    city for city in city_lookup.keys()
+    if city not in {"Close", "Further"}
+)
+
+w1, w2 = st.columns(2)
+
+with w1:
+    what_if_acres = st.number_input(
+        "Exact acreage",
+        min_value=0.1,
+        max_value=5000.0,
+        value=float(min_acres),
+        step=0.1,
+    )
+
+with w2:
+    what_if_location = st.selectbox(
+        "Location",
+        options=what_if_options,
+        index=0,
+    )
+
+if what_if_location in {"Close", "Further"}:
+    what_if_distance = what_if_location
+else:
+    what_if_distance = city_lookup[what_if_location]
+
+what_if_prediction_df = pd.DataFrame({
+    "lot_acres": [what_if_acres],
+    "Distance": pd.Categorical(
+        [what_if_distance],
+        categories=["Close", "Further"]
+    ),
+})
+
+what_if_pred = final_model.get_prediction(what_if_prediction_df).summary_frame()
+what_if_price = float(np.exp(what_if_pred["mean"].iloc[0]))
+what_if_price_per_acre = what_if_price / what_if_acres
+what_if_budget_gap = max(0.0, what_if_price - budget)
+
+wc1, wc2, wc3, wc4 = st.columns(4)
+wc1.metric("Model Price", f"${what_if_price:,.0f}")
+wc2.metric("Model $ / Acre", f"${what_if_price_per_acre:,.0f}")
+wc3.metric("Additional Cash Needed", f"${what_if_budget_gap:,.0f}")
+wc4.metric("Model Distance", what_if_distance)
+
+st.caption(
+    f"{what_if_location} is modeled as {what_if_distance}; the regression only uses acreage and Close/Further location."
+)
+
+# City chart uses the same property-table criteria, including the default budget filter.
+city_count_base = full_df[
+    full_df["status"].astype(str).str.upper().isin(show_status)
+    & full_df["Distance"].isin(selected_distance)
+    & full_df["lot_acres"].between(table_min_acres, table_max_acres)
+].copy()
+
+if budget_only:
+    city_count_base = city_count_base[
+        city_count_base["price"].le(budget)
+    ].copy()
+
+city_counts = (
+    city_count_base
+    .groupby(["city", "Distance"])
+    .size()
+    .reset_index(name="Count")
+)
+
+st.subheader("Qualifying properties by city")
+
+if city_counts.empty:
+    st.info("No properties match the current criteria.")
+else:
+    fig = px.bar(
+        city_counts.sort_values(["Count", "city"], ascending=[False, True]),
+        x="city",
+        y="Count",
+        color="Distance",
+        barmode="group",
+        text="Count",
+        title="Property Value Counts by City",
+    )
+    fig.update_traces(textposition="outside")
+    fig.update_layout(
+        xaxis_title="City",
+        yaxis_title="Qualifying Property Count",
+        xaxis_tickangle=-45,
+    )
+    st.plotly_chart(fig, width="stretch")
 
 
 # ============================================================
