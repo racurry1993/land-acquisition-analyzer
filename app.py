@@ -565,21 +565,23 @@ def scrape_locations(
 
     scrape_min_acres = max(
         1,
-        min_acres
+        min_acres * 0.75
     )
 
 
     scrape_max_acres = max(
 
-        max_acres,
+        max_acres * 1.25,
 
-        max_acres
+        max_acres + 10
     )
 
 
     lot_min_sqft = int(
         round(
             scrape_min_acres
+            *
+            43560
         )
     )
 
@@ -587,6 +589,8 @@ def scrape_locations(
     lot_max_sqft = int(
         round(
             scrape_max_acres
+            *
+            43560
         )
     )
 
