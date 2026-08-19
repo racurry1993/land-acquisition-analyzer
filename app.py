@@ -1206,7 +1206,7 @@ with tab5:
             lat="latitude", 
             lon="longitude", 
             color="Distance", 
-            size="avg_sold_price",
+            size="average_price",
             hover_name="city",
             hover_data={
                 "zip_code": True,
