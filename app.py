@@ -1199,19 +1199,25 @@ with tab5:
     )
 
     if zip_stats.empty:
-        st.info("No sold properties with valid ZIP/coordinate information match the current filters.")
+        st.info(
+            "No sold properties with valid ZIP/coordinate information "
+            "match the current filters."
+        )
     else:
         fig = px.scatter_map(
             zip_stats,
-            lat="latitude", 
-            lon="longitude", 
-            color="Distance", 
-            size="average_price",
+            lat="latitude",
+            lon="longitude",
+            color="Distance",
+
+            # Bubble size = average sold price
+            size="avg_sold_price",
+            size_max=35,
             hover_name="city",
             hover_data={
                 "zip_code": True,
-                "average_price": ":$,.0f",
-                "median_price": ":$,.0f",
+                "avg_sold_price": ":$,.0f",
+                "median_sold_price": ":$,.0f",
                 "sold_count": True,
                 "latitude": False,
                 "longitude": False,
@@ -1221,7 +1227,11 @@ with tab5:
             map_style="open-street-map",
             title="Average and Median Sold Price by ZIP Code",
         )
-        st.plotly_chart(fig, width="stretch")
+
+        st.plotly_chart(
+            fig,
+            width="stretch"
+        )
 
 
 # ============================================================
