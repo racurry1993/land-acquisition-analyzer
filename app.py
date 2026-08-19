@@ -38,7 +38,6 @@ DEFAULT_LOCATION_1 = [
     "Unionville, TN",
     "Versailles, TN",
     "Midland, TN",
-    "Wilhoite Mills, TN",
     "Holts Corner, TN",
     "Lasea, TN",
     "Santa Fe, TN",
@@ -56,6 +55,7 @@ DEFAULT_LOCATION_2 = [
     "Lyles, TN",
     "Burns, TN",
     "Nunnelly, TN",
+    "Wilhoite Mills, TN",
 ]
 
 SOLD_LOOKBACK_DAYS = 180
