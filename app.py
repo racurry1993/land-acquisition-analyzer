@@ -1208,16 +1208,16 @@ with tab5:
             zip_stats,
             lat="latitude",
             lon="longitude",
+            # Color = Close vs Further
             color="Distance",
-
             # Bubble size = average sold price
-            size="avg_sold_price",
+            size="average_price",
             size_max=35,
             hover_name="city",
             hover_data={
                 "zip_code": True,
-                "avg_sold_price": ":$,.0f",
-                "median_sold_price": ":$,.0f",
+                "average_price": ":$,.0f",
+                "median_price": ":$,.0f",
                 "sold_count": True,
                 "latitude": False,
                 "longitude": False,
