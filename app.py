@@ -1138,74 +1138,122 @@ with tab4:
 # City map: use ZIP code to locate aggregated city/Distance points.
 # ------------------------------------------------------------
 with tab5:
-    map_base = model_df[
-        model_df["status"].astype(str).str.upper().eq("SOLD")
-        & model_df["Distance"].isin(selected_distance)
-        & model_df["lot_acres"].between(table_min_acres, table_max_acres)
-    ].copy()
-    if budget_only:
-        map_base = map_base[map_base["price"].le(budget)].copy()
-    if perk_filter != "All":
-        map_base = map_base[map_base["has_perked"].eq(perk_filter)].copy()
+    # ============================================================
+    # CITY / ZIP PRICE MAP
+    # ============================================================
 
-    map_base["latitude"] = pd.to_numeric(map_base["latitude"], errors="coerce")
-    map_base["longitude"] = pd.to_numeric(map_base["longitude"], errors="coerce")
-    map_base["zip_code"] = map_base["zip_code"].astype(str).str.strip()
+    st.subheader("Sold Price Map by ZIP Code")
+
+    map_base = full_df[
+        full_df["status"].astype(str).str.upper().eq("SOLD")
+        & full_df["Distance"].isin(selected_distance)
+        & full_df["lot_acres"].between(
+            table_min_acres,
+            table_max_acres
+        )
+    ].copy()
+
+    # Apply budget filter only when the user has it enabled.
+    if budget_only:
+        map_base = map_base[
+            map_base["price"].le(budget)
+        ].copy()
+
+    # Apply optional perk filter.
+    if perk_filter != "All":
+        map_base = map_base[
+            map_base["has_perked"].eq(perk_filter)
+        ].copy()
+
+    # ------------------------------------------------------------
+    # Clean required fields
+    # ------------------------------------------------------------
+
+    map_base["zip_code"] = (
+        map_base["zip_code"]
+        .astype(str)
+        .str.strip()
+    )
+
+    map_base["city"] = (
+        map_base["city"]
+        .fillna("")
+        .astype(str)
+        .str.strip()
+    )
+
+    map_base["latitude"] = pd.to_numeric(
+        map_base["latitude"],
+        errors="coerce"
+    )
+
+    map_base["longitude"] = pd.to_numeric(
+        map_base["longitude"],
+        errors="coerce"
+    )
+
+    map_base["price"] = pd.to_numeric(
+        map_base["price"],
+        errors="coerce"
+    )
+
+    # Remove invalid records.
     map_base = map_base[
-        map_base["zip_code"].ne("")
+        map_base["zip_code"].notna()
+        & map_base["zip_code"].ne("")
         & map_base["zip_code"].ne("nan")
         & map_base["latitude"].notna()
         & map_base["longitude"].notna()
         & map_base["price"].notna()
+        & np.isfinite(map_base["price"])
+        & (map_base["price"] > 0)
     ].copy()
 
-    # Aggregate robustly by ZIP + Distance. Some HomeHarvest/Pandas
-    # combinations can raise an error with named aggregation + as_index=False,
-    # so build each statistic separately and merge them.
-    group_cols = ["zip_code", "Distance"]
 
-    coords = (
-        map_base.groupby(group_cols)[["latitude", "longitude"]]
-        .mean()
-        .reset_index()
-    )
+    # ------------------------------------------------------------
+    # Group directly by ZIP + Distance
+    # ------------------------------------------------------------
 
-    price_stats = (
-        map_base.groupby(group_cols)["price"]
-        .agg(
-            average_price="mean",
-            median_price="median",
-            sold_count="count",
+    def most_common_value(series):
+
+        values = (
+            series
+            .dropna()
+            .astype(str)
+            .str.strip()
         )
-        .reset_index()
-    )
 
-    city_stats = (
-        map_base.groupby(group_cols)["city"]
-        .agg(
-            city=lambda s: (
-                s.dropna().astype(str).mode().iat[0]
-                if not s.dropna().empty and not s.dropna().astype(str).mode().empty
-                else ""
-            )
+        if values.empty:
+            return ""
+
+        mode = values.mode()
+
+        if mode.empty:
+            return values.iloc[0]
+
+        return mode.iloc[0]
+
+
+    zip_stats = (
+        map_base
+        .groupby(
+            ["zip_code", "Distance"],
+            as_index=False
         )
-        .reset_index()
+        .agg(
+            latitude=("latitude", "mean"),
+            longitude=("longitude", "mean"),
+            average_price=("price", "mean"),
+            median_price=("price", "median"),
+            sold_count=("price", "count"),
+            city=("city", most_common_value),
+        )
     )
 
-    # ============================================================
-    # CLEAN ZIP MAP DATA BEFORE PLOTTING
-    # ============================================================
 
-    # Make sure numeric fields are actually numeric.
-    zip_stats["latitude"] = pd.to_numeric(
-        zip_stats["latitude"],
-        errors="coerce"
-    )
-
-    zip_stats["longitude"] = pd.to_numeric(
-        zip_stats["longitude"],
-        errors="coerce"
-    )
+    # ------------------------------------------------------------
+    # Final cleanup for Plotly
+    # ------------------------------------------------------------
 
     zip_stats["average_price"] = pd.to_numeric(
         zip_stats["average_price"],
@@ -1222,59 +1270,82 @@ with tab5:
         errors="coerce"
     )
 
+    zip_stats["latitude"] = pd.to_numeric(
+        zip_stats["latitude"],
+        errors="coerce"
+    )
 
-    # Remove invalid map observations.
+    zip_stats["longitude"] = pd.to_numeric(
+        zip_stats["longitude"],
+        errors="coerce"
+    )
+
     zip_stats = zip_stats[
         zip_stats["latitude"].notna()
-        &
-        zip_stats["longitude"].notna()
-        &
-        zip_stats["average_price"].notna()
-        &
-        np.isfinite(zip_stats["average_price"])
-        &
-        (zip_stats["average_price"] > 0)
+        & zip_stats["longitude"].notna()
+        & zip_stats["average_price"].notna()
+        & np.isfinite(zip_stats["average_price"])
+        & (zip_stats["average_price"] > 0)
     ].copy()
 
+
+    # ------------------------------------------------------------
+    # Plot
+    # ------------------------------------------------------------
+
     if zip_stats.empty:
+
         st.info(
-            "No valid ZIP-level sold-price observations "
-            "are available for the current filters."
+            "No sold properties with valid ZIP/coordinate "
+            "information match the current filters."
         )
+
     else:
+
         fig = px.scatter_map(
             zip_stats,
+
             lat="latitude",
+
             lon="longitude",
-            # ----------------------------------------------------
-            # Color = Close vs Further
-            # ----------------------------------------------------
+
+            # Close vs Further
             color="Distance",
-            # ----------------------------------------------------
+
             # Bubble size = average sold price
-            # ----------------------------------------------------
             size="average_price",
+
             size_max=40,
-            # ----------------------------------------------------
-            # Hover
-            # ----------------------------------------------------
+
             hover_name="city",
+
             hover_data={
+
                 "zip_code": True,
+
                 "average_price": ":$,.0f",
+
                 "median_price": ":$,.0f",
-                "sold_count": ":,.0f",
+
+                "sold_count": True,
+
                 "latitude": False,
+
                 "longitude": False,
             },
+
             zoom=8,
+
             height=600,
+
             map_style="open-street-map",
+
             title=(
                 "Sold Price by ZIP Code — "
                 "Bubble Size = Average Sold Price"
-            )
+            ),
         )
+
         st.plotly_chart(
             fig,
             width="stretch"
