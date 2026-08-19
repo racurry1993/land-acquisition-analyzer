@@ -394,8 +394,9 @@ def fit_notebook_model(full_df: pd.DataFrame):
 def build_prediction_curve(
     model,
     acreage_levels: list[int],
+    ci_alpha: float = 0.20,
 ) -> pd.DataFrame:
-    """Generate Close and Further point estimates with no intervals."""
+    """Generate point estimates plus confidence/prediction intervals."""
 
     rows = []
 
@@ -405,16 +406,22 @@ def build_prediction_curve(
                 "lot_acres": [acres],
                 "Distance": pd.Categorical(
                     [distance],
-                    categories=["Close", "Further"]
+                    categories=["Close", "Further"],
                 ),
             })
 
-            pred = model.get_prediction(prediction_df).summary_frame()
+            pred = model.get_prediction(
+                prediction_df
+            ).summary_frame(alpha=ci_alpha)
 
             rows.append({
                 "acres": acres,
                 "Distance": distance,
                 "estimate": float(np.exp(pred["mean"].iloc[0])),
+                "ci_low": float(np.exp(pred["mean_ci_lower"].iloc[0])),
+                "ci_high": float(np.exp(pred["mean_ci_upper"].iloc[0])),
+                "pi_low": float(np.exp(pred["obs_ci_lower"].iloc[0])),
+                "pi_high": float(np.exp(pred["obs_ci_upper"].iloc[0])),
             })
 
     return pd.DataFrame(rows)
@@ -735,6 +742,7 @@ st.caption(
 curve_df = build_prediction_curve(
     final_model,
     acreage_levels,
+    ci_alpha=1 - ci_level,
 )
 
 
